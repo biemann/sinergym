@@ -174,6 +174,8 @@ with mlflow.start_run(run_name=name):
         env = gym.make(args.environment, reward=LinearReward())
     elif args.reward == 'exponential':
         env = gym.make(args.environment, reward=ExpReward())
+    elif args.reward == 'gaussian':
+        env = gym.make(args.environment, reward=GaussianTrapezoidReward())
     else:
         raise RuntimeError('Reward function specified is not registered.')
 

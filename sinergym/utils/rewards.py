@@ -65,7 +65,7 @@ class LinearReward():
 
         # Weighted sum of both terms
         reward = self.W_energy * reward_energy + \
-            (1.0 - self.W_energy) * reward_comfort
+                 (1.0 - self.W_energy) * reward_comfort
         terms = {'reward_energy': reward_energy,
                  'reward_comfort': reward_comfort}
 
@@ -131,8 +131,99 @@ class ExpReward():
 
         # Weighted sum of both terms
         reward = self.W_energy * reward_energy + \
-            (1.0 - self.W_energy) * reward_comfort
+                 (1.0 - self.W_energy) * reward_comfort
         terms = {'reward_energy': reward_energy,
                  'reward_comfort': reward_comfort}
 
+        return reward, terms
+
+
+class GaussianTrapezoidReward:
+
+    def __init__(self,
+                 range_comfort_winter=(20.0, 23.5),
+                 range_comfort_summer=(23.0, 26.0),
+                 energy_weight=0.5,
+                 lambda_energy=1e-4,
+                 lambda_temperature=1.0,
+                 gaussian_sharp=0.5,
+                 trapezoid_weight=0.1
+                 ):
+
+        """Reward used in the rl-testbed-for-energyplus. Default values from their paper. The comfort curve looks
+        like a (unnormalised) Gaussian distribution centered in the center of the comfort range. There is a linear decay outside of
+        the comfort range, analogous to LinearReward. This helps to avoid sparse reward signals, when the temperature
+        is far away from the comfort range.
+
+           .. math::
+               R = - W * lambda_E * power - (1 - W) * lambda_T * [exp(-tau *(T-T_mean)**2)) - weight_trap * (max(T - T_{low}, 0) + max(T_{up} - T, 0)))]
+
+           Args:
+               range_comfort_winter (tuple, optional): Temperature comfort range for cold season. Defaults to (20.0, 23.5).
+               range_comfort_summer (tuple, optional): Temperature comfort range fot hot season. Defaults to (23.0, 26.0).
+               energy_weight (float, optional): Weight given to the energy term. Defaults to 0.5.
+               lambda_energy (float, optional): Constant for removing dimensions from power(1/W). Defaults to 1e-4.
+               lambda_temperature (float, optional): Constant for removing dimensions from temperature(1/C). Defaults to 1.0.
+               gaussian_sharp (float, optional): Constant proportional to the precision of a Gaussian distribution (inverse of variance). A high value gives a sharp peak. Defaults to 0.5
+               trapezoid_weight (float, optional): Constant determining the slope of the penalty when the temperature is outside of comfort range. Defaults to 0.1.
+           """
+
+        # Variables
+        self.range_comfort_winter = range_comfort_winter
+        self.range_comfort_summer = range_comfort_summer
+        self.W_energy = energy_weight
+        self.lambda_energy = lambda_energy
+        self.lambda_temp = lambda_temperature
+
+        # Periods
+        self.summer_start_date = datetime(YEAR, 6, 1)
+        self.summer_final_date = datetime(YEAR, 9, 30)
+
+        # Gaussian part (this parameter would be 1/2sigma^2 for standard deviation sigma)
+        self.gaussian_sharp = gaussian_sharp
+
+        # Trapezoid part (to help training at the beginning to avoid sparse rewards)
+
+        self.trapezoid_weight = trapezoid_weight
+
+    def calculate(self, power, temperatures, month, day):
+        """Reward calculus.
+
+        Args:
+            power (float): Power consumption.
+            temperatures (list): Indoor temperatures (one per zone).
+            month (int): Current month.
+            day (int): Current day.
+
+        Returns:
+            float: Reward value.
+        """
+
+        # Energy term
+        reward_energy = - self.lambda_energy * power
+
+        # Comfort term
+
+        current_dt = datetime(YEAR, month, day)
+        range_T = self.range_comfort_summer if self.summer_start_date <= current_dt <= self.summer_final_date else self.range_comfort_winter
+        gaussian_mean = (range_T[0] + range_T[1])/2
+
+        reward_comfort = 0
+        for temperature in temperatures:
+            gaussian_reward = exp(-(self.gaussian_sharp * (temperature - gaussian_mean) ** 2))
+
+            if temperature < range_T[0]:
+                trap_penalty = self.trapezoid_weight * (range_T[0] - temperature)
+            elif temperature > range_T[1]:
+                trap_penalty = self.trapezoid_weight * (temperature - range_T[1])
+            else:
+                trap_penalty = 0.0
+            reward_comfort += self.lambda_temp * gaussian_reward - trap_penalty
+
+        # Weighted sum of both terms
+
+        reward = self.W_energy * reward_energy + (1.0 - self.W_energy) * reward_comfort
+
+        terms = {'reward_energy': reward_energy,
+                 'reward_comfort': reward_comfort}
         return reward, terms
